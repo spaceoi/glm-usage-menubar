@@ -32,11 +32,39 @@ Accept-Language: en-US,en
 ## 构建 & 运行
 
 ```bash
-./build.sh            # swiftc 编译并打包 build/GLM Usage.app
+./build.sh            # swiftc 编译（arm64 + x86_64 通用二进制）并打包 build/GLM Usage.app
 open "build/GLM Usage.app"
 ```
 
 要求 macOS 13+（登录启动用了 SMAppService）。
+
+## 安装到其他 Mac
+
+三种方式任选：
+
+**方式一：一键脚本（推荐）**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/spaceoi/glm-usage-menubar/main/install.sh | bash
+```
+
+自动下载最新 Release 到 /Applications（无权限则装到 ~/Applications）、清除隔离属性并启动。
+
+**方式二：手动下载 Release**
+
+1. 到 [Releases](https://github.com/spaceoi/glm-usage-menubar/releases/latest) 下载 `GLM-Usage-macos.zip`
+2. 解压并把 `GLM Usage.app` 拖到 /Applications
+3. 应用未做 Apple 公证，首次打开被 Gatekeeper 拦截时执行：
+   ```bash
+   xattr -cr "/Applications/GLM Usage.app"
+   ```
+   然后正常打开（或者右键 → 打开）。
+
+**方式三：源码构建**
+
+目标机器装好 Xcode Command Line Tools（`xcode-select --install`）后克隆本仓库，`./build.sh` 即可。本机编译的二进制无 Gatekeeper 问题。
+
+**新机器上的 Key 配置**：应用按 `GLM_API_KEY` 环境变量 → `~/.glm-usage-menubar/config.json` → `~/.zcode/cli/config.json` 的顺序找 key。没有 ZCode 的机器上，点菜单栏图标 → 编辑配置…，填入 GLM Coding Plan API Key，再点一次菜单生效。
 
 ## API Key 解析顺序
 
@@ -77,7 +105,9 @@ open "build/GLM Usage.app"
 ## 文件结构
 
 ```
-main.swift   # 全部实现（API 模型/配置/拉取/菜单栏/悬浮窗）
-build.sh     # swiftc 编译 + .app 打包
-Info.plist   # LSUIElement=true（无 Dock 图标）
+main.swift    # 全部实现（API 模型/配置/拉取/菜单栏/悬浮窗）
+build.sh      # swiftc 双架构编译 + .app 打包（arm64 + x86_64）
+release.sh    # 打 zip 并发布 GitHub Release（./release.sh v1.0.0）
+install.sh    # 其他 Mac 一键安装最新 Release
+Info.plist    # LSUIElement=true（无 Dock 图标）
 ```
