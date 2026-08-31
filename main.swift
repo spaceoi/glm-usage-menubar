@@ -409,8 +409,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     @objc func refresh() {
-        state = .loading
-        render()
+        // 静默刷新：轮询期间保留旧值，拿到新结果才原地更新，避免状态栏闪烁
         fetcher.fetch(cfg: cfg) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -418,7 +417,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
                 case .success(let resp):
                     self.state = .loaded(resp, Date())
                 case .failure(let error):
-                    self.state = .failed(error.localizedDescription, Date())
+                    // 已有数据时静默保留（菜单里可见上次刷新时间），仅首次拉取失败才显示错误
+                    if case .loading = self.state {
+                        self.state = .failed(error.localizedDescription, Date())
+                    }
                 }
                 self.render()
             }
