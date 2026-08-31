@@ -220,8 +220,15 @@ func resetTimeLabel(_ ms: Double?, now: Date) -> String? {
     } else {
         formatter.dateFormat = "MM-dd HH:mm"
     }
-    let mins = Int(date.timeIntervalSince(now) / 60)
-    let countdown = mins >= 60 ? "\(mins / 60) 小时 \(mins % 60) 分" : "\(max(mins, 0)) 分钟"
+    let mins = max(0, Int(date.timeIntervalSince(now) / 60))
+    let countdown: String
+    if mins >= 1440 {
+        countdown = "\(mins / 1440) 天 \(mins % 1440 / 60) 小时"
+    } else if mins >= 60 {
+        countdown = "\(mins / 60) 小时 \(mins % 60) 分"
+    } else {
+        countdown = "\(mins) 分钟"
+    }
     return "\(formatter.string(from: date))（\(countdown)后）"
 }
 
@@ -237,11 +244,18 @@ func titleText(for state: UsageState) -> (text: String, color: NSColor) {
         guard let used = limit?.percentage else { return ("GLM", .labelColor) }
         let remaining = max(0, 100 - used)
         let color: NSColor = remaining <= 5 ? .systemRed : remaining <= 20 ? .systemOrange : .labelColor
-        // 标题 = 剩余百分比 + 距 5 小时窗口重置的倒计时，随每轮轮询刷新
+        // 标题 = 剩余百分比 + 紧凑倒计时（26m / 2h47m / 2d3h），随每轮轮询刷新
         guard let resetMs = limit?.nextResetTime else { return ("GLM \(remaining)%", color) }
         let reset = Date(timeIntervalSince1970: resetMs / 1000)
         let mins = max(0, Int(reset.timeIntervalSince(Date()) / 60))
-        let countdown = mins >= 60 ? "\(mins / 60)小时\(mins % 60)分" : "\(mins)分"
+        let countdown: String
+        if mins >= 1440 {
+            countdown = "\(mins / 1440)d\(mins % 1440 / 60)h"
+        } else if mins >= 60 {
+            countdown = "\(mins / 60)h\(mins % 60)m"
+        } else {
+            countdown = "\(mins)m"
+        }
         return ("\(remaining)% \(countdown)", color)
     }
 }
