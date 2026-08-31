@@ -237,12 +237,12 @@ func titleText(for state: UsageState) -> (text: String, color: NSColor) {
         guard let used = limit?.percentage else { return ("GLM", .labelColor) }
         let remaining = max(0, 100 - used)
         let color: NSColor = remaining <= 5 ? .systemRed : remaining <= 20 ? .systemOrange : .labelColor
-        // 标题 = 距 5 小时窗口重置的倒计时 + 剩余百分比，随每轮轮询刷新
+        // 标题 = 剩余百分比 + 距 5 小时窗口重置的倒计时，随每轮轮询刷新
         guard let resetMs = limit?.nextResetTime else { return ("GLM \(remaining)%", color) }
         let reset = Date(timeIntervalSince1970: resetMs / 1000)
         let mins = max(0, Int(reset.timeIntervalSince(Date()) / 60))
         let countdown = mins >= 60 ? "\(mins / 60)小时\(mins % 60)分" : "\(mins)分"
-        return ("\(countdown) \(remaining)%", color)
+        return ("\(remaining)% \(countdown)", color)
     }
 }
 
