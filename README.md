@@ -90,6 +90,21 @@ curl -fsSL https://raw.githubusercontent.com/spaceoi/glm-usage-menubar/main/inst
 
 注意：若菜单栏已被其他状态项占满（尤其带刘海的机型），macOS 会把放不下的状态项藏进隐藏溢出区——此时需要精简菜单栏或使用 Bartender/Ice 等管理工具，或改用悬浮窗模式。
 
+## 重置券（ZCode 账号登录）
+
+菜单里的「🔑 登录 ZCode 账号」走 ZCode 的 OAuth CLI 流程（浏览器授权一次），之后可查询/使用**重置券**：
+
+- `5 小时重置券: N 张（最早 yyyy-MM-dd HH:mm 到期）` / `周重置券: M 张`（周券会同步重置 5h 额度）
+- `最近使用` 历史
+- `⚡ 使用一张 5 小时重置券`：立即重置当前 5 小时窗口（弹确认框，消耗一张券）
+
+说明：
+
+- 接口为 `GET/POST /api/v1/coding-plan/reset/(status|use)`（ZCode 后端 `zcode.z.ai`），鉴权用 OAuth 换取的双令牌（`Authorization: Bearer <zcode JWT>` + `X-Bigmodel-Authorization: Bearer <MaaS token>`），纯 API Key 不被接受
+- 令牌保存在 `~/.glm-usage-menubar/credentials.json`（权限 0600），与 ZCode 自身登录互不影响；过期后菜单会提示重新登录
+- 所有 API 时间的显示固定为北京时间（Asia/Shanghai），与智谱网页控制台一致
+- 默认网关 `https://zcode.z.ai`，可在 config.json 用 `zcodeApiBase` 覆盖
+
 ## 现成的替代方案（调研结论）
 
 | 项目 | 形态 | 说明 |
