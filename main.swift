@@ -44,6 +44,7 @@ struct AppConfig: Codable {
     var baseUrl: String?
     var intervalSeconds: Int?
     var panelVisible: Bool?
+    var zcodeApiBase: String?
 }
 
 /// 悬浮窗位置等界面状态（与配置分开存储）
@@ -63,7 +64,7 @@ enum Config {
 
     /// API Key 解析优先级: 环境变量 GLM_API_KEY > config.json > ~/.zcode/cli/config.json
     static func load() -> AppConfig {
-        var cfg = AppConfig(apiKey: nil, baseUrl: nil, intervalSeconds: nil, panelVisible: nil)
+        var cfg = AppConfig(apiKey: nil, baseUrl: nil, intervalSeconds: nil, panelVisible: nil, zcodeApiBase: nil)
 
         if let data = try? Data(contentsOf: appConfigURL),
            let parsed = try? JSONDecoder().decode(AppConfig.self, from: data) {
@@ -71,6 +72,7 @@ enum Config {
             cfg.baseUrl = parsed.baseUrl ?? cfg.baseUrl
             cfg.intervalSeconds = parsed.intervalSeconds ?? cfg.intervalSeconds
             cfg.panelVisible = parsed.panelVisible ?? cfg.panelVisible
+            cfg.zcodeApiBase = parsed.zcodeApiBase ?? cfg.zcodeApiBase
         }
 
         if cfg.apiKey == nil,
@@ -214,6 +216,8 @@ func resetTimeLabel(_ ms: Double?, now: Date) -> String? {
     guard let ms else { return nil }
     let date = Date(timeIntervalSince1970: ms / 1000)
     let formatter = DateFormatter()
+    // 与智谱网页控制台一致，固定按北京时间显示
+    formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
     let calendar = Calendar.current
     if calendar.isDate(date, inSameDayAs: now) {
         formatter.dateFormat = "今天 HH:mm"
@@ -303,6 +307,330 @@ final class HUDButton: NSButton {
     }
 }
 
+// MARK: - 重置券（ZCode 账号 OAuth 登录后可用）
+
+struct ResetCredentials: Codable {
+    var zcodeJwt: String
+    var bigmodelAccess: String
+    var userName: String
+}
+
+enum CredentialsStore {
+    static let url = Config.configDir.appendingPathComponent("credentials.json")
+
+    static func load() -> ResetCredentials? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(ResetCredentials.self, from: data)
+    }
+
+    static func save(_ creds: ResetCredentials) {
+        try? FileManager.default.createDirectory(at: Config.configDir, withIntermediateDirectories: true)
+        guard let data = try? JSONEncoder().encode(creds) else { return }
+        try? data.write(to: url, options: .atomic)
+        // 令牌文件仅本人可读写
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    static func clear() {
+        try? FileManager.default.removeItem(at: url)
+    }
+}
+
+/// /api/v1/coding-plan/reset/status 的 data 段
+struct ResetStatus: Decodable {
+    let fiveHourExpireAts: [Date]
+    let weekExpireAts: [Date]
+    let lastFiveHourUsedAt: Date?
+    let lastWeekUsedAt: Date?
+
+    init(fiveHour: [Date], week: [Date], lastFiveHour: Date?, lastWeek: Date?) {
+        fiveHourExpireAts = fiveHour
+        weekExpireAts = week
+        lastFiveHourUsedAt = lastFiveHour
+        lastWeekUsedAt = lastWeek
+    }
+}
+
+private struct ResetStatusEnvelope: Decodable {
+    struct Voucher: Decodable { let expire_at: Double }
+    struct History: Decodable { let used_at: Double }
+    struct Payload: Decodable {
+        let available_five_hour_resets: [Voucher]?
+        let available_week_resets: [Voucher]?
+        let latest_five_hour_reset_history: History?
+        let latest_week_reset_history: History?
+    }
+    let code: Int
+    let msg: String?
+    let data: Payload?
+
+    var status: ResetStatus? {
+        guard let d = data else { return nil }
+        // expire_at/used_at 为毫秒 epoch（兼容秒），直接用会得到公元 5 万年的日期
+        func toDate(_ v: Double) -> Date {
+            v > 1e12 ? Date(timeIntervalSince1970: v / 1000) : Date(timeIntervalSince1970: v)
+        }
+        return ResetStatus(
+            fiveHour: (d.available_five_hour_resets ?? []).map { toDate($0.expire_at) },
+            week: (d.available_week_resets ?? []).map { toDate($0.expire_at) },
+            lastFiveHour: d.latest_five_hour_reset_history.map { toDate($0.used_at) },
+            lastWeek: d.latest_week_reset_history.map { toDate($0.used_at) }
+        )
+    }
+}
+
+enum ResetError: LocalizedError {
+    case unauthorized
+    case message(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .unauthorized: return "登录已过期，请重新登录 ZCode 账号"
+        case .message(let m): return m
+        }
+    }
+}
+
+final class ResetClient {
+    static let shared = ResetClient()
+    private let session: URLSession
+
+    init() {
+        let c = URLSessionConfiguration.ephemeral
+        c.timeoutIntervalForRequest = 15
+        c.timeoutIntervalForResource = 30
+        session = URLSession(configuration: c)
+    }
+
+    private var base: String { Config.load().zcodeApiBase ?? "https://zcode.z.ai" }
+
+    private static func randomHex(bytes: Int) -> String {
+        var b = [UInt8](repeating: 0, count: bytes)
+        _ = SecRandomCopyBytes(kSecRandomDefault, bytes, &b)
+        return b.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func get(_ url: URL, headers: [String: String], completion: @escaping (Result<Data, ResetError>) -> Void) {
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        headers.forEach { req.setValue($1, forHTTPHeaderField: $0) }
+        session.dataTask(with: req) { data, resp, error in
+            Self.handle(data: data, resp: resp, error: error, completion: completion)
+        }.resume()
+    }
+
+    private func post(_ url: URL, headers: [String: String], body: [String: Any], completion: @escaping (Result<Data, ResetError>) -> Void) {
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        headers.forEach { req.setValue($1, forHTTPHeaderField: $0) }
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        session.dataTask(with: req) { data, resp, error in
+            Self.handle(data: data, resp: resp, error: error, completion: completion)
+        }.resume()
+    }
+
+    private static func handle(data: Data?, resp: URLResponse?, error: Error?, completion: @escaping (Result<Data, ResetError>) -> Void) {
+        DispatchQueue.main.async {
+            if let error {
+                completion(.failure(.message(error.localizedDescription)))
+                return
+            }
+            guard let http = resp as? HTTPURLResponse, let data else {
+                completion(.failure(.message("响应异常")))
+                return
+            }
+            if http.statusCode == 401 {
+                completion(.failure(.unauthorized))
+                return
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                let body = String(data: data.prefix(200), encoding: .utf8) ?? ""
+                completion(.failure(.message("HTTP \(http.statusCode) \(body)")))
+                return
+            }
+            completion(.success(data))
+        }
+    }
+
+    /// 双令牌请求头（与 ZCode 客户端一致）
+    private static func resetHeaders(_ creds: ResetCredentials) -> [String: String] {
+        [
+            "Authorization": "Bearer \(creds.zcodeJwt)",
+            "X-Bigmodel-Authorization": "Bearer \(creds.bigmodelAccess)",
+            "Bigmodel-Target-Type": "PERSONAL",
+        ]
+    }
+
+    // MARK: OAuth 登录
+
+    struct LoginSession {
+        let flowId: String
+        let authorizeURL: URL
+        let nonce: String
+        let pollInterval: TimeInterval
+        let expiresAt: Date
+    }
+
+    enum PollOutcome {
+        case pending
+        case ready(zcodeJwt: String, bigmodelAccess: String, userName: String?)
+    }
+
+    func startInit(completion: @escaping (Result<LoginSession, ResetError>) -> Void) {
+        let nonce = Self.randomHex(bytes: 32)
+        post(
+            URL(string: "\(base)/api/v1/oauth/cli/init")!,
+            headers: ["Authorization": "Bearer \(nonce)"],
+            body: ["provider": "bigmodel"]
+        ) { result in
+            switch result {
+            case .failure(let e):
+                completion(.failure(e))
+            case .success(let data):
+                struct InitResp: Decodable {
+                    let code: Int
+                    let msg: String?
+                    let data: Payload?
+                    struct Payload: Decodable {
+                        let flow_id: String?
+                        let authorize_url: String?
+                        let expires_at: Double?
+                        let poll_interval_sec: Double?
+                    }
+                }
+                if let resp = try? JSONDecoder().decode(InitResp.self, from: data),
+                   code0(resp.code), let d = resp.data,
+                   let flowId = d.flow_id, let auth = d.authorize_url, let url = URL(string: auth) {
+                    let interval = TimeInterval(d.poll_interval_sec ?? 2)
+                    // expires_at 单位不定（毫秒/秒 epoch 或相对秒数），按量级自适应
+                    let expires: Date
+                    if let v = d.expires_at {
+                        if v > 1e12 {
+                            expires = Date(timeIntervalSince1970: v / 1000)
+                        } else if v > 1e8 {
+                            expires = Date(timeIntervalSince1970: v)
+                        } else {
+                            expires = Date().addingTimeInterval(v)
+                        }
+                    } else {
+                        expires = Date().addingTimeInterval(600)
+                    }
+                    completion(.success(LoginSession(
+                        flowId: flowId, authorizeURL: url, nonce: nonce,
+                        pollInterval: max(1, interval), expiresAt: expires
+                    )))
+                } else {
+                    completion(.failure(.message("初始化登录失败")))
+                }
+            }
+        }
+    }
+
+    func poll(flowId: String, nonce: String, completion: @escaping (Result<PollOutcome, ResetError>) -> Void) {
+        get(
+            URL(string: "\(base)/api/v1/oauth/cli/poll/\(flowId)")!,
+            headers: ["Authorization": "Bearer \(nonce)"]
+        ) { result in
+            switch result {
+            case .failure(let e):
+                completion(.failure(e))
+            case .success(let data):
+                struct PollResp: Decodable {
+                    let code: Int
+                    let msg: String?
+                    let data: Payload?
+                    struct Payload: Decodable {
+                        let status: String?
+                        let token: String?
+                        let bigmodel: Bigmodel?
+                        let user: User?
+                        struct Bigmodel: Decodable {
+                            let access_token: String?
+                            let accessToken: String?
+                        }
+                        struct User: Decodable {
+                            let name: String?
+                            let email: String?
+                            let user_id: String?
+                        }
+                    }
+                }
+                guard let resp = try? JSONDecoder().decode(PollResp.self, from: data), code0(resp.code) else {
+                    completion(.failure(.message("查询授权响应无效")))
+                    return
+                }
+                switch resp.data?.status {
+                case "pending", nil:
+                    completion(.success(.pending))
+                case "failed":
+                    completion(.failure(.message("浏览器授权失败")))
+                case "ready":
+                    let d = resp.data!
+                    let access = d.bigmodel?.access_token ?? d.bigmodel?.accessToken
+                    guard let jwt = d.token, let access, !access.isEmpty else {
+                        completion(.failure(.message("授权响应缺少令牌")))
+                        return
+                    }
+                    let name = d.user?.name ?? d.user?.email
+                    completion(.success(.ready(zcodeJwt: jwt, bigmodelAccess: access, userName: name)))
+                default:
+                    completion(.failure(.message("查询授权响应无效")))
+                }
+            }
+        }
+    }
+
+    // MARK: 券查询 / 使用
+
+    func fetchStatus(creds: ResetCredentials, completion: @escaping (Result<ResetStatus, ResetError>) -> Void) {
+        get(
+            URL(string: "\(base)/api/v1/coding-plan/reset/status")!,
+            headers: Self.resetHeaders(creds)
+        ) { result in
+            switch result {
+            case .failure(let e):
+                completion(.failure(e))
+            case .success(let data):
+                if let envelope = try? JSONDecoder().decode(ResetStatusEnvelope.self, from: data),
+                   envelope.code == 0, let status = envelope.status {
+                    completion(.success(status))
+                } else {
+                    completion(.failure(.message("重置券响应无效")))
+                }
+            }
+        }
+    }
+
+    func useVoucher(creds: ResetCredentials, type: String, completion: @escaping (Result<Void, ResetError>) -> Void) {
+        post(
+            URL(string: "\(base)/api/v1/coding-plan/reset/use")!,
+            headers: Self.resetHeaders(creds),
+            body: ["idempotency_key": Self.randomHex(bytes: 16), "reset_type": type]
+        ) { result in
+            switch result {
+            case .failure(let e):
+                completion(.failure(e))
+            case .success(let data):
+                struct UseResp: Decodable {
+                    let code: Int
+                    let msg: String?
+                    let data: Payload?
+                    struct Payload: Decodable { let used: Bool? }
+                }
+                if let resp = try? JSONDecoder().decode(UseResp.self, from: data), resp.code == 0, resp.data?.used == true {
+                    completion(.success(()))
+                } else {
+                    let msg = (try? JSONDecoder().decode(UseResp.self, from: data))?.msg ?? "使用失败"
+                    completion(.failure(.message(msg)))
+                }
+            }
+        }
+    }
+}
+
+private func code0(_ code: Int) -> Bool { code == 0 }
+
 // MARK: - 菜单栏控制器
 
 final class StatusBarController: NSObject, NSMenuDelegate {
@@ -315,6 +643,23 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private var panelState = Config.loadPanelState()
     private var hudPanel: HUDPanel?
     private var hudButton: HUDButton?
+
+    // 重置券状态
+    private var credentials: ResetCredentials?
+    private var resetStatus: ResetStatus?
+    private enum ResetSession { case loggedOut, awaitingBrowser, expired, failed(String) }
+    private var resetSession: ResetSession = .loggedOut
+    private var loginPollTimer: Timer?
+    private var loginFlowId: String?
+    private var loginNonce: String?
+    private var loginExpiresAt: Date?
+    private let loginItem = NSMenuItem(title: "🔑 登录 ZCode 账号（查看重置券）", action: #selector(startResetLogin), keyEquivalent: "")
+    private let accountLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let fiveHourLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let weekLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let lastUsedLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let useVoucherItem = NSMenuItem(title: "⚡ 使用一张 5 小时重置券", action: #selector(useFiveHourVoucher), keyEquivalent: "")
+    private let logoutResetItem = NSMenuItem(title: "退出重置券登录", action: #selector(logoutReset), keyEquivalent: "")
 
     // 菜单条目（打开菜单时刷新标题）
     private let statusLine = NSMenuItem(title: "加载中…", action: nil, keyEquivalent: "")
@@ -329,6 +674,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     override init() {
         super.init()
+        credentials = CredentialsStore.load()
         buildMenu()
         statusItem.button?.font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium)
         render()
@@ -360,6 +706,18 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         detailsStart.isEnabled = false
         menu.addItem(detailsStart)
+
+        // 重置券区
+        loginItem.target = self
+        menu.addItem(loginItem)
+        for item in [accountLine, fiveHourLine, weekLine, lastUsedLine] {
+            item.isEnabled = false
+            menu.addItem(item)
+        }
+        useVoucherItem.target = self
+        menu.addItem(useVoucherItem)
+        logoutResetItem.target = self
+        menu.addItem(logoutResetItem)
 
         menu.addItem(.separator())
         footerLine.isEnabled = false
@@ -410,6 +768,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     @objc func refresh() {
         // 静默刷新：轮询期间保留旧值，拿到新结果才原地更新，避免状态栏闪烁
+        fetchResetStatus()
         fetcher.fetch(cfg: cfg) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -505,7 +864,177 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         } else {
             footerLine.title = "每 \(interval) 秒自动刷新 · 数据源 \(cfg.baseUrl ?? Config.defaultBaseURL)"
         }
+        renderResetMenuItems()
         panelToggleItem?.title = (hudPanel == nil) ? "显示悬浮窗" : "隐藏悬浮窗"
+    }
+
+    // MARK: 重置券菜单渲染与动作
+
+    private func dateShort(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm"
+        // 与智谱网页控制台一致，固定按北京时间显示
+        f.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        return f.string(from: date)
+    }
+
+    private func resetLine(_ label: String, _ dates: [Date]) -> String {
+        guard let earliest = dates.min() else { return "  \(label): 无" }
+        return "  \(label): \(dates.count) 张（最早 \(dateShort(earliest)) 到期）"
+    }
+
+    private func renderResetMenuItems() {
+        var awaiting = false
+        if case .awaitingBrowser = resetSession { awaiting = true }
+
+        loginItem.isHidden = credentials != nil || awaiting
+        loginItem.isEnabled = !loginItem.isHidden
+        if credentials == nil, !awaiting {
+            switch resetSession {
+            case .expired:
+                loginItem.title = "🔑 登录已过期，点击重新登录（重置券）"
+            case .failed(let message):
+                loginItem.title = "登录失败：\(message)（点击重试）"
+            default:
+                loginItem.title = "🔑 登录 ZCode 账号（查看重置券）"
+            }
+        }
+
+        let hasCreds = credentials != nil
+        accountLine.isHidden = !hasCreds
+        let hasStatus = hasCreds && resetStatus != nil
+        fiveHourLine.isHidden = !hasStatus
+        weekLine.isHidden = !hasStatus
+        lastUsedLine.isHidden = !hasStatus
+        useVoucherItem.isHidden = !hasStatus || (resetStatus?.fiveHourExpireAts.isEmpty ?? true)
+        useVoucherItem.isEnabled = !useVoucherItem.isHidden
+        logoutResetItem.isHidden = !hasCreds
+
+        if let creds = credentials {
+            accountLine.title = "👤 \(creds.userName.isEmpty ? "已登录" : creds.userName)"
+            if let s = resetStatus {
+                fiveHourLine.title = resetLine("5 小时重置券", s.fiveHourExpireAts)
+                weekLine.title = resetLine("周重置券", s.weekExpireAts)
+                var parts: [String] = []
+                if let d = s.lastFiveHourUsedAt { parts.append("5h \(dateShort(d))") }
+                if let d = s.lastWeekUsedAt { parts.append("周 \(dateShort(d))") }
+                lastUsedLine.title = parts.isEmpty ? "  最近使用: 从未" : "  最近使用: \(parts.joined(separator: " · "))"
+            } else if awaiting {
+                fiveHourLine.title = "  券信息: 等待授权…"
+            } else {
+                fiveHourLine.title = "  券信息: 加载中…"
+            }
+        }
+    }
+
+    private func fetchResetStatus() {
+        guard let creds = credentials else { return }
+        ResetClient.shared.fetchStatus(creds: creds) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let status):
+                self.resetStatus = status
+            case .failure(let error):
+                if case .unauthorized = error {
+                    CredentialsStore.clear()
+                    self.credentials = nil
+                    self.resetStatus = nil
+                    self.resetSession = .expired
+                }
+                // 其他失败静默保留旧值
+            }
+            self.render()
+        }
+    }
+
+    @objc private func startResetLogin() {
+        resetSession = .awaitingBrowser
+        ResetClient.shared.startInit { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.resetSession = .failed(error.localizedDescription)
+            case .success(let session):
+                NSWorkspace.shared.open(session.authorizeURL)
+                self.armLoginPolling(session)
+            }
+        }
+    }
+
+    private func armLoginPolling(_ session: ResetClient.LoginSession) {
+        loginPollTimer?.invalidate()
+        loginFlowId = session.flowId
+        loginNonce = session.nonce
+        loginExpiresAt = session.expiresAt
+        loginPollTimer = Timer.scheduledTimer(withTimeInterval: session.pollInterval, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            if Date() >= (self.loginExpiresAt ?? Date()) {
+                timer.invalidate()
+                self.resetSession = .failed("授权超时，请重试")
+                return
+            }
+            guard let flowId = self.loginFlowId, let nonce = self.loginNonce else { timer.invalidate(); return }
+            ResetClient.shared.poll(flowId: flowId, nonce: nonce) { [weak self] result in
+                guard let self else { return }
+                var awaiting = false
+                if case .success(.pending) = result { awaiting = true }
+                if awaiting { return }
+                switch result {
+                case .success(.pending):
+                    break
+                case .failure(let error):
+                    timer.invalidate()
+                    self.resetSession = .failed(error.localizedDescription)
+                case .success(.ready(let jwt, let access, let name)):
+                    timer.invalidate()
+                    let creds = ResetCredentials(zcodeJwt: jwt, bigmodelAccess: access, userName: name ?? "")
+                    CredentialsStore.save(creds)
+                    self.credentials = creds
+                    self.resetStatus = nil
+                    self.resetSession = .loggedOut
+                    self.fetchResetStatus()
+                }
+                self.render()
+            }
+        }
+    }
+
+    @objc private func logoutReset() {
+        loginPollTimer?.invalidate()
+        CredentialsStore.clear()
+        credentials = nil
+        resetStatus = nil
+        resetSession = .loggedOut
+        render()
+    }
+
+    @objc private func useFiveHourVoucher() {
+        guard let creds = credentials else { return }
+        let alert = NSAlert()
+        alert.messageText = "使用一张 5 小时重置券？"
+        alert.informativeText = "将立即重置当前 5 小时 Token 窗口，并消耗一张重置券。此操作不可撤销。"
+        alert.addButton(withTitle: "使用")
+        alert.addButton(withTitle: "取消")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        ResetClient.shared.useVoucher(creds: creds, type: "FIVE_HOUR") { [weak self] result in
+            guard let self else { return }
+            let notice = NSAlert()
+            switch result {
+            case .success:
+                notice.messageText = "已使用重置券，Token 窗口已重置"
+                self.refresh()
+            case .failure(let error):
+                notice.messageText = "使用失败"
+                notice.informativeText = error.localizedDescription
+                if case .unauthorized = error {
+                    CredentialsStore.clear()
+                    self.credentials = nil
+                    self.resetStatus = nil
+                    self.resetSession = .expired
+                }
+            }
+            notice.runModal()
+        }
     }
 
     /// 复用 detail 条目，避免每次重建菜单
