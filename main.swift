@@ -658,7 +658,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private let fiveHourLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let weekLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let lastUsedLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-    private let useVoucherItem = NSMenuItem(title: "⚡ 使用一张 5 小时重置券", action: #selector(useFiveHourVoucher), keyEquivalent: "")
+    private let useVoucherSubmenu = NSMenu()
+    private let useVoucherSubmenuItem = NSMenuItem(title: "使用重置券", action: nil, keyEquivalent: "")
+    private let useFiveHourItem = NSMenuItem(title: "⚡ 5 小时重置券", action: #selector(useFiveHourVoucher), keyEquivalent: "")
     private let logoutResetItem = NSMenuItem(title: "退出重置券登录", action: #selector(logoutReset), keyEquivalent: "")
 
     // 菜单条目（打开菜单时刷新标题）
@@ -707,15 +709,21 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         detailsStart.isEnabled = false
         menu.addItem(detailsStart)
 
-        // 重置券区
+        // 重置券区（前置分割线与用量明细隔开）
+        menu.addItem(.separator())
         loginItem.target = self
         menu.addItem(loginItem)
         for item in [accountLine, fiveHourLine, weekLine, lastUsedLine] {
             item.isEnabled = false
             menu.addItem(item)
         }
-        useVoucherItem.target = self
-        menu.addItem(useVoucherItem)
+        // 重置动作收进二级子菜单，避免误触；点击后还有确认弹窗兜底
+        menu.addItem(.separator())
+        useVoucherSubmenu.autoenablesItems = false
+        useFiveHourItem.target = self
+        useVoucherSubmenu.addItem(useFiveHourItem)
+        useVoucherSubmenuItem.submenu = useVoucherSubmenu
+        menu.addItem(useVoucherSubmenuItem)
         logoutResetItem.target = self
         menu.addItem(logoutResetItem)
 
@@ -906,9 +914,12 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         fiveHourLine.isHidden = !hasStatus
         weekLine.isHidden = !hasStatus
         lastUsedLine.isHidden = !hasStatus
-        useVoucherItem.isHidden = !hasStatus || (resetStatus?.fiveHourExpireAts.isEmpty ?? true)
-        useVoucherItem.isEnabled = !useVoucherItem.isHidden
+        useVoucherSubmenuItem.isHidden = !hasStatus
         logoutResetItem.isHidden = !hasCreds
+
+        let fiveHourCount = resetStatus?.fiveHourExpireAts.count ?? 0
+        useFiveHourItem.title = fiveHourCount > 0 ? "⚡ 5 小时重置券（剩 \(fiveHourCount) 张）" : "5 小时重置券（无可用）"
+        useFiveHourItem.isEnabled = fiveHourCount > 0
 
         if let creds = credentials {
             accountLine.title = "👤 \(creds.userName.isEmpty ? "已登录" : creds.userName)"
