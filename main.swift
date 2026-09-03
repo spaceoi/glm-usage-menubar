@@ -45,6 +45,7 @@ struct AppConfig: Codable {
     var intervalSeconds: Int?
     var panelVisible: Bool?
     var zcodeApiBase: String?
+    var displayTimezone: String?
 }
 
 /// 悬浮窗位置等界面状态（与配置分开存储）
@@ -73,6 +74,7 @@ enum Config {
             cfg.intervalSeconds = parsed.intervalSeconds ?? cfg.intervalSeconds
             cfg.panelVisible = parsed.panelVisible ?? cfg.panelVisible
             cfg.zcodeApiBase = parsed.zcodeApiBase ?? cfg.zcodeApiBase
+            cfg.displayTimezone = parsed.displayTimezone ?? cfg.displayTimezone
         }
 
         if cfg.apiKey == nil,
@@ -116,7 +118,9 @@ enum Config {
           "apiKey": "在这里填入你的 GLM Coding Plan API Key",
           "baseUrl": "\(defaultBaseURL)",
           "intervalSeconds": 60,
-          "panelVisible": false
+          "panelVisible": false,
+          "displayTimezone": null,
+          "zcodeApiBase": null
         }
         """
         try? template.write(to: appConfigURL, atomically: true, encoding: .utf8)
@@ -212,21 +216,11 @@ func timeString(_ date: Date) -> String {
     return formatter.string(from: date)
 }
 
-/// 本地时间与北京时间的墙上时刻不同时，返回「北京时间 …」后缀（系统就在北京时区时返回 nil）
-func beijingSuffix(_ date: Date) -> String? {
-    let bj = DateFormatter()
-    bj.timeZone = TimeZone(identifier: "Asia/Shanghai")
-    bj.dateFormat = "yyyy-MM-dd HH:mm"
-    let local = DateFormatter()
-    local.dateFormat = "yyyy-MM-dd HH:mm"
-    if bj.string(from: date) == local.string(from: date) { return nil }
-    return "北京时间 \(bj.string(from: date))"
-}
-
-func resetTimeLabel(_ ms: Double?, now: Date) -> String? {
+func resetTimeLabel(_ ms: Double?, now: Date, timeZone: TimeZone = .current) -> String? {
     guard let ms else { return nil }
     let date = Date(timeIntervalSince1970: ms / 1000)
-    let formatter = DateFormatter() // 系统本地时区
+    let formatter = DateFormatter()
+    formatter.timeZone = timeZone
     let calendar = Calendar.current
     if calendar.isDate(date, inSameDayAs: now) {
         formatter.dateFormat = "今天 HH:mm"
@@ -242,9 +236,7 @@ func resetTimeLabel(_ ms: Double?, now: Date) -> String? {
     } else {
         countdown = "\(mins) 分钟"
     }
-    var text = "\(formatter.string(from: date))（\(countdown)后"
-    if let bj = beijingSuffix(date) { text += "，\(bj)" }
-    return text + "）"
+    return "\(formatter.string(from: date))（\(countdown)后）"
 }
 
 /// 依据状态生成标题文本与颜色（菜单栏与悬浮窗共用）
@@ -652,6 +644,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private let fetcher = UsageFetcher()
     private var cfg = Config.load()
     private var panelState = Config.loadPanelState()
+    /// API 时间显示时区：config.json 的 displayTimezone（IANA 名称），缺省为系统时区
+    private var displayTimeZone: TimeZone = .current
     private var hudPanel: HUDPanel?
     private var hudButton: HUDButton?
 
@@ -824,6 +818,11 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     /// 打开菜单时刷新各条目标题
     func menuWillOpen(_ menu: NSMenu) {
         cfg = Config.load()
+        if let name = cfg.displayTimezone, let tz = TimeZone(identifier: name) {
+            displayTimeZone = tz
+        } else {
+            displayTimeZone = .current
+        }
         switch state {
         case .loading:
             statusLine.title = "正在查询用量…"
@@ -854,7 +853,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
                 } else {
                     tokensLine.title = "  5 小时 Token 窗口: 暂无数据"
                 }
-                tokensResetLine.title = resetTimeLabel(tokens.nextResetTime, now: now).map { "  ↻ 重置于 \($0)" } ?? ""
+                tokensResetLine.title = resetTimeLabel(tokens.nextResetTime, now: now, timeZone: displayTimeZone).map { "  ↻ 重置于 \($0)" } ?? ""
             } else {
                 tokensLine.title = "  5 小时 Token 窗口: 无数据（Key 可能不含 Coding Plan 权限）"
                 tokensResetLine.title = ""
@@ -864,7 +863,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             if let timeLimit, let used = timeLimit.currentValue, let total = timeLimit.usage {
                 let remaining = timeLimit.remaining ?? max(0, total - used)
                 timeLimitLine.title = "  MCP 工具调用: 已用 \(used)/\(total)，剩余 \(remaining)"
-                timeLimitResetLine.title = resetTimeLabel(timeLimit.nextResetTime, now: now).map { "  ↻ 重置于 \($0)" } ?? ""
+                timeLimitResetLine.title = resetTimeLabel(timeLimit.nextResetTime, now: now, timeZone: displayTimeZone).map { "  ↻ 重置于 \($0)" } ?? ""
                 let details = (timeLimit.usageDetails ?? [])
                     .filter { ($0.usage ?? 0) > 0 }
                     .map { "      \($0.modelCode ?? "?") · \($0.usage ?? 0)" }
@@ -883,6 +882,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         } else {
             footerLine.title = "每 \(interval) 秒自动刷新 · 数据源 \(cfg.baseUrl ?? Config.defaultBaseURL)"
         }
+        if let name = cfg.displayTimezone, TimeZone(identifier: name) != nil {
+            footerLine.title += " · 时区 \(name)"
+        }
         renderResetMenuItems()
         panelToggleItem?.title = (hudPanel == nil) ? "显示悬浮窗" : "隐藏悬浮窗"
     }
@@ -890,16 +892,14 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     // MARK: 重置券菜单渲染与动作
 
     private func dateShort(_ date: Date) -> String {
-        let f = DateFormatter() // 系统本地时区
+        let f = DateFormatter()
+        f.timeZone = displayTimeZone
         f.dateFormat = "yyyy-MM-dd HH:mm"
         return f.string(from: date)
     }
 
     private func resetLine(_ label: String, _ dates: [Date]) -> String {
         guard let earliest = dates.min() else { return "  \(label): 无" }
-        if let bj = beijingSuffix(earliest) {
-            return "  \(label): \(dates.count) 张（最早 \(dateShort(earliest)) 到期，\(bj)）"
-        }
         return "  \(label): \(dates.count) 张（最早 \(dateShort(earliest)) 到期）"
     }
 
