@@ -212,12 +212,21 @@ func timeString(_ date: Date) -> String {
     return formatter.string(from: date)
 }
 
+/// 本地时间与北京时间的墙上时刻不同时，返回「北京时间 …」后缀（系统就在北京时区时返回 nil）
+func beijingSuffix(_ date: Date) -> String? {
+    let bj = DateFormatter()
+    bj.timeZone = TimeZone(identifier: "Asia/Shanghai")
+    bj.dateFormat = "yyyy-MM-dd HH:mm"
+    let local = DateFormatter()
+    local.dateFormat = "yyyy-MM-dd HH:mm"
+    if bj.string(from: date) == local.string(from: date) { return nil }
+    return "北京时间 \(bj.string(from: date))"
+}
+
 func resetTimeLabel(_ ms: Double?, now: Date) -> String? {
     guard let ms else { return nil }
     let date = Date(timeIntervalSince1970: ms / 1000)
-    let formatter = DateFormatter()
-    // 与智谱网页控制台一致，固定按北京时间显示
-    formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+    let formatter = DateFormatter() // 系统本地时区
     let calendar = Calendar.current
     if calendar.isDate(date, inSameDayAs: now) {
         formatter.dateFormat = "今天 HH:mm"
@@ -233,7 +242,9 @@ func resetTimeLabel(_ ms: Double?, now: Date) -> String? {
     } else {
         countdown = "\(mins) 分钟"
     }
-    return "\(formatter.string(from: date))（\(countdown)后）"
+    var text = "\(formatter.string(from: date))（\(countdown)后"
+    if let bj = beijingSuffix(date) { text += "，\(bj)" }
+    return text + "）"
 }
 
 /// 依据状态生成标题文本与颜色（菜单栏与悬浮窗共用）
@@ -879,15 +890,16 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     // MARK: 重置券菜单渲染与动作
 
     private func dateShort(_ date: Date) -> String {
-        let f = DateFormatter()
+        let f = DateFormatter() // 系统本地时区
         f.dateFormat = "yyyy-MM-dd HH:mm"
-        // 与智谱网页控制台一致，固定按北京时间显示
-        f.timeZone = TimeZone(identifier: "Asia/Shanghai")
         return f.string(from: date)
     }
 
     private func resetLine(_ label: String, _ dates: [Date]) -> String {
         guard let earliest = dates.min() else { return "  \(label): 无" }
+        if let bj = beijingSuffix(earliest) {
+            return "  \(label): \(dates.count) 张（最早 \(dateShort(earliest)) 到期，\(bj)）"
+        }
         return "  \(label): \(dates.count) 张（最早 \(dateShort(earliest)) 到期）"
     }
 

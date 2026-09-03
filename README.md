@@ -102,7 +102,7 @@ curl -fsSL https://raw.githubusercontent.com/spaceoi/glm-usage-menubar/main/inst
 
 - 接口为 `GET/POST /api/v1/coding-plan/reset/(status|use)`（ZCode 后端 `zcode.z.ai`），鉴权用 OAuth 换取的双令牌（`Authorization: Bearer <zcode JWT>` + `X-Bigmodel-Authorization: Bearer <MaaS token>`），纯 API Key 不被接受
 - 令牌保存在 `~/.glm-usage-menubar/credentials.json`（权限 0600），与 ZCode 自身登录互不影响；过期后菜单会提示重新登录
-- 所有 API 时间的显示固定为北京时间（Asia/Shanghai），与智谱网页控制台一致
+- 所有 API 时间按**系统本地时区**显示；系统不在北京时区时自动括注「北京时间 …」（与智谱网页控制台口径对齐）
 - 默认网关 `https://zcode.z.ai`，可在 config.json 用 `zcodeApiBase` 覆盖
 
 ## 现成的替代方案（调研结论）
