@@ -837,7 +837,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             (parts.bottom as NSString).size(withAttributes: attrs).width
         )
         // 最小宽度下限，避免文字贴边或被裁切
-        statusItem.length = max(textWidth + 8, 44)
+        statusItem.length = max(textWidth + 4, 36)
         if let button = statusItem.button {
             button.title = ""
             topStatusLabel.attributedStringValue = statusAttributed(parts.top, color: parts.color)
