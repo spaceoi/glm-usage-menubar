@@ -239,20 +239,19 @@ func resetTimeLabel(_ ms: Double?, now: Date, timeZone: TimeZone = .current) -> 
     return "\(formatter.string(from: date))（\(countdown)后）"
 }
 
-/// 依据状态生成标题文本与颜色（菜单栏与悬浮窗共用）
-func titleText(for state: UsageState) -> (text: String, color: NSColor) {
+/// 状态栏两行展示：上行百分比、下行倒计时；悬浮窗用拼接单行
+func statusParts(for state: UsageState) -> (top: String, bottom: String, color: NSColor) {
     switch state {
     case .loading:
-        return ("GLM …", .labelColor)
+        return ("GLM", "…", .labelColor)
     case .failed:
-        return ("GLM ⚠️", .systemYellow)
+        return ("GLM", "⚠️", .systemYellow)
     case .loaded(let resp, _):
         let limit = resp.data?.limits?.first { $0.type == "TOKENS_LIMIT" }
-        guard let used = limit?.percentage else { return ("GLM", .labelColor) }
+        guard let used = limit?.percentage else { return ("GLM", "—", .labelColor) }
         let remaining = max(0, 100 - used)
         let color: NSColor = remaining <= 5 ? .systemRed : remaining <= 20 ? .systemOrange : .labelColor
-        // 标题 = 剩余百分比 + 紧凑倒计时（26m / 2h47m / 2d3h），随每轮轮询刷新
-        guard let resetMs = limit?.nextResetTime else { return ("GLM \(remaining)%", color) }
+        guard let resetMs = limit?.nextResetTime else { return ("\(remaining)%", "—", color) }
         let reset = Date(timeIntervalSince1970: resetMs / 1000)
         let mins = max(0, Int(reset.timeIntervalSince(Date()) / 60))
         let countdown: String
@@ -263,7 +262,7 @@ func titleText(for state: UsageState) -> (text: String, color: NSColor) {
         } else {
             countdown = "\(mins)m"
         }
-        return ("\(remaining)% \(countdown)", color)
+        return ("\(remaining)%", countdown, color)
     }
 }
 
@@ -646,6 +645,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private var panelState = Config.loadPanelState()
     /// API 时间显示时区：config.json 的 displayTimezone（IANA 名称），缺省为系统时区
     private var displayTimeZone: TimeZone = .current
+    private let topStatusLabel = NSTextField(labelWithString: "")
+    private let bottomStatusLabel = NSTextField(labelWithString: "")
+    static let statusFont = NSFont.monospacedDigitSystemFont(ofSize: 9.5, weight: .medium)
     private var hudPanel: HUDPanel?
     private var hudButton: HUDButton?
 
@@ -683,7 +685,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         super.init()
         credentials = CredentialsStore.load()
         buildMenu()
-        statusItem.button?.font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium)
+        setupStatusBarTwoLineView()
         render()
         if cfg.panelVisible ?? false {
             showPanel()
@@ -801,18 +803,47 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     // MARK: 渲染
 
-    private func render() {
-        let (text, color) = titleText(for: state)
-        if let button = statusItem.button {
-            button.attributedTitle = NSAttributedString(
-                string: text,
-                attributes: [
-                    .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium),
-                    .foregroundColor: color,
-                ]
-            )
+    private func setupStatusBarTwoLineView() {
+        guard let button = statusItem.button else { return }
+        for label in [topStatusLabel, bottomStatusLabel] {
+            label.font = Self.statusFont
         }
-        renderPanel(text: text, color: color)
+        let stack = NSStackView(views: [topStatusLabel, bottomStatusLabel])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 0
+        button.title = ""
+        button.addSubview(stack)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: button.centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: button.centerYAnchor),
+        ])
+    }
+
+    private func statusAttributed(_ text: String, color: NSColor) -> NSAttributedString {
+        NSAttributedString(string: text, attributes: [
+            .font: Self.statusFont,
+            .foregroundColor: color,
+        ])
+    }
+
+    private func render() {
+        let parts = statusParts(for: state)
+        // 状态栏按钮不会为子视图自动变宽，按两行文本的最大宽度显式设置长度
+        let attrs: [NSAttributedString.Key: Any] = [.font: Self.statusFont]
+        let textWidth = max(
+            (parts.top as NSString).size(withAttributes: attrs).width,
+            (parts.bottom as NSString).size(withAttributes: attrs).width
+        )
+        // 最小宽度下限，避免文字贴边或被裁切
+        statusItem.length = max(textWidth + 8, 44)
+        if let button = statusItem.button {
+            button.title = ""
+            topStatusLabel.attributedStringValue = statusAttributed(parts.top, color: parts.color)
+            bottomStatusLabel.attributedStringValue = statusAttributed(parts.bottom, color: parts.color)
+        }
+        renderPanel(text: [parts.top, parts.bottom].filter { !$0.isEmpty }.joined(separator: " "), color: parts.color)
     }
 
     /// 打开菜单时刷新各条目标题
