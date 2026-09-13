@@ -110,6 +110,7 @@ curl -fsSL https://raw.githubusercontent.com/spaceoi/glm-usage-menubar/main/inst
 5 小时窗口剩余低于阈值时，弹一条系统通知，并可同时发送 Pushover 消息：
 
 - `alertThresholdPercent`：阈值，默认 `3`（剩余 <3% 时告警）；**每个重置窗口只告警一次**，窗口轮换后自动重新武装
+- `resetReminderMinutes`：重置前提醒，默认 `2`（距重置不足 2 分钟时再发一条系统通知 + Pushover，每窗口一次）
 - `pushoverToken` / `pushoverUser` / `pushoverDevice`：Pushover 应用令牌、用户 Key、目标设备（可选）。未配置 token/user 时只弹系统通知
 - 首次启动会请求系统通知权限（拒绝后系统通知不再可用，Pushover 不受影响）
 
