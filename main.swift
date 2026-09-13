@@ -5,6 +5,7 @@
 import AppKit
 import Foundation
 import ServiceManagement
+import UserNotifications
 
 // MARK: - API 模型
 
@@ -46,6 +47,10 @@ struct AppConfig: Codable {
     var panelVisible: Bool?
     var zcodeApiBase: String?
     var displayTimezone: String?
+    var alertThresholdPercent: Int?
+    var pushoverToken: String?
+    var pushoverUser: String?
+    var pushoverDevice: String?
 }
 
 /// 悬浮窗位置等界面状态（与配置分开存储）
@@ -75,6 +80,10 @@ enum Config {
             cfg.panelVisible = parsed.panelVisible ?? cfg.panelVisible
             cfg.zcodeApiBase = parsed.zcodeApiBase ?? cfg.zcodeApiBase
             cfg.displayTimezone = parsed.displayTimezone ?? cfg.displayTimezone
+            cfg.alertThresholdPercent = parsed.alertThresholdPercent ?? cfg.alertThresholdPercent
+            cfg.pushoverToken = parsed.pushoverToken ?? cfg.pushoverToken
+            cfg.pushoverUser = parsed.pushoverUser ?? cfg.pushoverUser
+            cfg.pushoverDevice = parsed.pushoverDevice ?? cfg.pushoverDevice
         }
 
         if cfg.apiKey == nil,
@@ -120,7 +129,11 @@ enum Config {
           "intervalSeconds": 60,
           "panelVisible": false,
           "displayTimezone": null,
-          "zcodeApiBase": null
+          "zcodeApiBase": null,
+          "alertThresholdPercent": 3,
+          "pushoverToken": null,
+          "pushoverUser": null,
+          "pushoverDevice": null
         }
         """
         try? template.write(to: appConfigURL, atomically: true, encoding: .utf8)
@@ -657,6 +670,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private enum ResetSession { case loggedOut, awaitingBrowser, expired, failed(String) }
     private var resetSession: ResetSession = .loggedOut
     private var loginPollTimer: Timer?
+    /// 已告警窗口的 nextResetTime（ms），同一窗口只告警一次
+    private var alertedWindowKey: Double?
     private var loginFlowId: String?
     private var loginNonce: String?
     private var loginExpiresAt: Date?
@@ -790,6 +805,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
                 switch result {
                 case .success(let resp):
                     self.state = .loaded(resp, Date())
+                    self.checkQuotaAlert(resp)
                 case .failure(let error):
                     // 已有数据时静默保留（菜单里可见上次刷新时间），仅首次拉取失败才显示错误
                     if case .loading = self.state {
@@ -979,6 +995,65 @@ final class StatusBarController: NSObject, NSMenuDelegate {
                 fiveHourLine.title = "  券信息: 加载中…"
             }
         }
+    }
+
+    /// 剩余低于阈值时弹系统通知 + 发 Pushover；同一重置窗口只触发一次
+    private func checkQuotaAlert(_ resp: QuotaResponse) {
+        guard let limit = resp.data?.limits?.first(where: { $0.type == "TOKENS_LIMIT" }),
+              let used = limit.percentage,
+              let resetMs = limit.nextResetTime else { return }
+        let remaining = max(0, 100 - used)
+        let threshold = cfg.alertThresholdPercent ?? 3
+        guard remaining < threshold else {
+            // 窗口轮换（重置后）解除告警锁，允许下个窗口再次告警
+            if alertedWindowKey == resetMs { alertedWindowKey = nil }
+            return
+        }
+        guard alertedWindowKey != resetMs else { return }
+        alertedWindowKey = resetMs
+
+        let resetDate = Date(timeIntervalSince1970: resetMs / 1000)
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        let resetStr = formatter.string(from: resetDate)
+        let body = "5 小时窗口剩余 \(remaining)%（低于 \(threshold)%），将于 \(resetStr) 重置"
+
+        let content = UNMutableNotificationContent()
+        content.title = "GLM 额度即将耗尽"
+        content.body = body
+        content.sound = .default
+        let request = UNNotificationRequest(identifier: "glm-quota-alert-\(resetMs)", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
+
+        sendPushover(title: "GLM 额度即将耗尽", body: body)
+    }
+
+    /// Pushover 未配置时静默跳过
+    private func sendPushover(title: String, body: String) {
+        guard let token = cfg.pushoverToken, !token.isEmpty,
+              let user = cfg.pushoverUser, !user.isEmpty else { return }
+        var components = URLComponents(string: "https://api.pushover.net/1/messages.json")
+        var items = [
+            URLQueryItem(name: "token", value: token),
+            URLQueryItem(name: "user", value: user),
+            URLQueryItem(name: "title", value: title),
+            URLQueryItem(name: "message", value: body),
+            URLQueryItem(name: "priority", value: "1"),
+        ]
+        if let device = cfg.pushoverDevice, !device.isEmpty {
+            items.append(URLQueryItem(name: "device", value: device))
+        }
+        components?.queryItems = items
+        guard let url = components?.url else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        URLSession.shared.dataTask(with: request) { _, response, error in
+            if let error {
+                NSLog("[glm-usage] Pushover 发送失败: \(error.localizedDescription)")
+            } else if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+                NSLog("[glm-usage] Pushover 返回 HTTP \(http.statusCode)")
+            }
+        }.resume()
     }
 
     private func fetchResetStatus() {
@@ -1258,10 +1333,24 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
 // MARK: - 启动
 
+/// 前台（辅助型应用）也展示横幅
+final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound])
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controller: StatusBarController?
+    private let notificationDelegate = NotificationDelegate()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let center = UNUserNotificationCenter.current()
+        center.delegate = notificationDelegate
+        // 仅请求一次；用户拒绝后本会话不再弹窗，也不影响 Pushover
+        center.requestAuthorization(options: [.alert]) { _, _ in }
         controller = StatusBarController()
     }
 }
