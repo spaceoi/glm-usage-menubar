@@ -105,6 +105,25 @@ curl -fsSL https://raw.githubusercontent.com/spaceoi/glm-usage-menubar/main/inst
 - 所有 API 时间默认按**系统本地时区**显示，无任何额外标注；如需固定时区（例如对齐智谱网页的北京时间），在 config.json 设 `"displayTimezone": "Asia/Shanghai"`（任意 IANA 名称，`null` 恢复默认），生效时底部信息会标注当前时区
 - 默认网关 `https://zcode.z.ai`，可在 config.json 用 `zcodeApiBase` 覆盖
 
+## 额度告警（系统通知 + Pushover）
+
+5 小时窗口剩余低于阈值时，弹一条系统通知，并可同时发送 Pushover 消息：
+
+- `alertThresholdPercent`：阈值，默认 `3`（剩余 <3% 时告警）；**每个重置窗口只告警一次**，窗口轮换后自动重新武装
+- `pushoverToken` / `pushoverUser` / `pushoverDevice`：Pushover 应用令牌、用户 Key、目标设备（可选）。未配置 token/user 时只弹系统通知
+- 首次启动会请求系统通知权限（拒绝后系统通知不再可用，Pushover 不受影响）
+
+config.json 示例：
+
+```json
+{
+  "alertThresholdPercent": 3,
+  "pushoverToken": "apxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "pushoverUser": "uxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "pushoverDevice": "iphone"
+}
+```
+
 ## 现成的替代方案（调研结论）
 
 | 项目 | 形态 | 说明 |
