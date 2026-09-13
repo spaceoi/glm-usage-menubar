@@ -48,6 +48,7 @@ struct AppConfig: Codable {
     var zcodeApiBase: String?
     var displayTimezone: String?
     var alertThresholdPercent: Int?
+    var resetReminderMinutes: Int?
     var pushoverToken: String?
     var pushoverUser: String?
     var pushoverDevice: String?
@@ -81,6 +82,7 @@ enum Config {
             cfg.zcodeApiBase = parsed.zcodeApiBase ?? cfg.zcodeApiBase
             cfg.displayTimezone = parsed.displayTimezone ?? cfg.displayTimezone
             cfg.alertThresholdPercent = parsed.alertThresholdPercent ?? cfg.alertThresholdPercent
+            cfg.resetReminderMinutes = parsed.resetReminderMinutes ?? cfg.resetReminderMinutes
             cfg.pushoverToken = parsed.pushoverToken ?? cfg.pushoverToken
             cfg.pushoverUser = parsed.pushoverUser ?? cfg.pushoverUser
             cfg.pushoverDevice = parsed.pushoverDevice ?? cfg.pushoverDevice
@@ -131,6 +133,7 @@ enum Config {
           "displayTimezone": null,
           "zcodeApiBase": null,
           "alertThresholdPercent": 3,
+          "resetReminderMinutes": 2,
           "pushoverToken": null,
           "pushoverUser": null,
           "pushoverDevice": null
@@ -672,6 +675,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private var loginPollTimer: Timer?
     /// 已告警窗口的 nextResetTime（ms），同一窗口只告警一次
     private var alertedWindowKey: Double?
+    /// 已提醒过「即将重置」的窗口
+    private var remindedWindowKey: Double?
     private var loginFlowId: String?
     private var loginNonce: String?
     private var loginExpiresAt: Date?
@@ -806,6 +811,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
                 case .success(let resp):
                     self.state = .loaded(resp, Date())
                     self.checkQuotaAlert(resp)
+                    self.checkResetReminder(resp)
                 case .failure(let error):
                     // 已有数据时静默保留（菜单里可见上次刷新时间），仅首次拉取失败才显示错误
                     if case .loading = self.state {
@@ -1054,6 +1060,34 @@ final class StatusBarController: NSObject, NSMenuDelegate {
                 NSLog("[glm-usage] Pushover 返回 HTTP \(http.statusCode)")
             }
         }.resume()
+    }
+
+    /// 距重置不足 resetReminderMinutes（默认 2）分钟时提醒；同一窗口只提醒一次
+    private func checkResetReminder(_ resp: QuotaResponse) {
+        guard let limit = resp.data?.limits?.first(where: { $0.type == "TOKENS_LIMIT" }),
+              let resetMs = limit.nextResetTime else { return }
+        let reset = Date(timeIntervalSince1970: resetMs / 1000)
+        let secs = reset.timeIntervalSince(Date())
+        let reminderMins = cfg.resetReminderMinutes ?? 2
+        // -60s 容差：轮询间隔可能正好跨过重置点
+        guard secs < Double(reminderMins * 60), secs > -60 else { return }
+        guard remindedWindowKey != resetMs else { return }
+        remindedWindowKey = resetMs
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        let resetStr = formatter.string(from: reset)
+        NSLog("[glm-usage] 重置提醒已触发: 窗口将于 \(resetStr) 重置（剩余 \(Int(secs))s）")
+        let body = "5 小时窗口还剩不到 \(reminderMins) 分钟，将于 \(resetStr) 重置。需要收尾的任务抓紧，或在菜单里使用重置券。"
+
+        let content = UNMutableNotificationContent()
+        content.title = "GLM 窗口即将重置"
+        content.body = body
+        content.sound = .default
+        let request = UNNotificationRequest(identifier: "glm-reset-reminder-\(resetMs)", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
+
+        sendPushover(title: "GLM 窗口即将重置", body: body)
     }
 
     private func fetchResetStatus() {
