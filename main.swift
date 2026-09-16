@@ -822,24 +822,39 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     // MARK: 渲染
 
+    /// 两行文字预渲染成图片：cell 对标题的垂直锚定不受段落样式控制（顶行会贴边），
+    /// 而 image 由按钮垂直居中，边距由绘制坐标完全掌控
+    private func renderStatusImage(top: String, bottom: String, color: NSColor) -> NSImage {
+        let attrs: [NSAttributedString.Key: Any] = [.font: Self.statusFont]
+        let topW = (top as NSString).size(withAttributes: attrs).width
+        let bottomW = (bottom as NSString).size(withAttributes: attrs).width
+        let width = ceil(max(topW, bottomW))
+        let lineH: CGFloat = 10.5
+        // 总高 23pt：26pt 菜单栏居中后上下各留 1.5pt，行间距 2pt
+        let size = NSSize(width: width, height: lineH * 2 + 2)
+        let image = NSImage(size: size)
+        var topAttrs = attrs
+        topAttrs[.foregroundColor] = color
+        var bottomAttrs = attrs
+        bottomAttrs[.foregroundColor] = color
+        image.lockFocus()
+        (top as NSString).draw(
+            in: NSRect(x: (size.width - topW) / 2, y: lineH + 2, width: topW, height: lineH),
+            withAttributes: topAttrs
+        )
+        (bottom as NSString).draw(
+            in: NSRect(x: (size.width - bottomW) / 2, y: 0, width: bottomW, height: lineH),
+            withAttributes: bottomAttrs
+        )
+        image.unlockFocus()
+        return image
+    }
+
     private func render() {
         let parts = statusParts(for: state)
-        // 双行标题用单个带换行的属性字符串实现——状态栏按钮不支持自定义子视图，
-        // 子视图会触发 _updateReplicants 快照死循环（CPU 持续占用）
         if let button = statusItem.button {
-            let paragraph = NSMutableParagraphStyle()
-            paragraph.alignment = .center
-            paragraph.lineSpacing = 0
-            // 两行自然行高 24pt 会顶满 26pt 菜单栏，压缩行盒给上下各留约 3pt 边距
-            paragraph.lineHeightMultiple = 0.85
-            button.attributedTitle = NSAttributedString(
-                string: parts.top + "\n" + parts.bottom,
-                attributes: [
-                    .font: Self.statusFont,
-                    .foregroundColor: parts.color,
-                    .paragraphStyle: paragraph,
-                ]
-            )
+            button.image = renderStatusImage(top: parts.top, bottom: parts.bottom, color: parts.color)
+            button.imagePosition = .imageOnly
         }
         renderPanel(text: [parts.top, parts.bottom].filter { !$0.isEmpty }.joined(separator: " "), color: parts.color)
     }
