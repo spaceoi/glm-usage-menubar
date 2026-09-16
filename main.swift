@@ -823,30 +823,33 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     // MARK: 渲染
 
     /// 两行文字预渲染成图片：cell 对标题的垂直锚定不受段落样式控制（顶行会贴边），
-    /// 而 image 由按钮垂直居中，边距由绘制坐标完全掌控
+    /// 而 image 由按钮垂直居中，边距由绘制坐标完全掌控。
+    /// 正常态用 template image（画黑色 + isTemplate），系统按菜单栏深浅自动反色；
+    /// 橙/红/黄告警态直接绘制颜色、不做 template
     private func renderStatusImage(top: String, bottom: String, color: NSColor) -> NSImage {
         let attrs: [NSAttributedString.Key: Any] = [.font: Self.statusFont]
         let topW = (top as NSString).size(withAttributes: attrs).width
         let bottomW = (bottom as NSString).size(withAttributes: attrs).width
         let width = ceil(max(topW, bottomW))
         let lineH: CGFloat = 10.5
-        // 总高 23pt：26pt 菜单栏居中后上下各留 1.5pt，行间距 2pt
-        let size = NSSize(width: width, height: lineH * 2 + 2)
+        // 两行绘制框零间隙，总高 21pt，居中后上下各留约 2pt
+        let size = NSSize(width: width, height: lineH * 2)
+        let isWarning = (color == .systemOrange || color == .systemRed || color == .systemYellow)
+        let drawColor: NSColor = isWarning ? color : .black
+        var drawAttrs = attrs
+        drawAttrs[.foregroundColor] = drawColor
         let image = NSImage(size: size)
-        var topAttrs = attrs
-        topAttrs[.foregroundColor] = color
-        var bottomAttrs = attrs
-        bottomAttrs[.foregroundColor] = color
         image.lockFocus()
         (top as NSString).draw(
-            in: NSRect(x: (size.width - topW) / 2, y: lineH + 2, width: topW, height: lineH),
-            withAttributes: topAttrs
+            in: NSRect(x: (size.width - topW) / 2, y: lineH, width: topW, height: lineH),
+            withAttributes: drawAttrs
         )
         (bottom as NSString).draw(
             in: NSRect(x: (size.width - bottomW) / 2, y: 0, width: bottomW, height: lineH),
-            withAttributes: bottomAttrs
+            withAttributes: drawAttrs
         )
         image.unlockFocus()
+        image.isTemplate = !isWarning
         return image
     }
 
