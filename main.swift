@@ -830,6 +830,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             let paragraph = NSMutableParagraphStyle()
             paragraph.alignment = .center
             paragraph.lineSpacing = 0
+            // 两行自然行高 24pt 会顶满 26pt 菜单栏，压缩行盒给上下各留约 3pt 边距
+            paragraph.lineHeightMultiple = 0.85
             button.attributedTitle = NSAttributedString(
                 string: parts.top + "\n" + parts.bottom,
                 attributes: [
