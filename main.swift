@@ -661,8 +661,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private var panelState = Config.loadPanelState()
     /// API 时间显示时区：config.json 的 displayTimezone（IANA 名称），缺省为系统时区
     private var displayTimeZone: TimeZone = .current
-    private let topStatusLabel = NSTextField(labelWithString: "")
-    private let bottomStatusLabel = NSTextField(labelWithString: "")
     static let statusFont = NSFont.monospacedDigitSystemFont(ofSize: 9.5, weight: .medium)
     private var hudPanel: HUDPanel?
     private var hudButton: HUDButton?
@@ -705,7 +703,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         super.init()
         credentials = CredentialsStore.load()
         buildMenu()
-        setupStatusBarTwoLineView()
         render()
         if cfg.panelVisible ?? false {
             showPanel()
@@ -825,45 +822,22 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     // MARK: 渲染
 
-    private func setupStatusBarTwoLineView() {
-        guard let button = statusItem.button else { return }
-        for label in [topStatusLabel, bottomStatusLabel] {
-            label.font = Self.statusFont
-        }
-        let stack = NSStackView(views: [topStatusLabel, bottomStatusLabel])
-        stack.orientation = .vertical
-        stack.alignment = .centerX
-        stack.spacing = 0
-        button.title = ""
-        button.addSubview(stack)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            stack.centerXAnchor.constraint(equalTo: button.centerXAnchor),
-            stack.centerYAnchor.constraint(equalTo: button.centerYAnchor),
-        ])
-    }
-
-    private func statusAttributed(_ text: String, color: NSColor) -> NSAttributedString {
-        NSAttributedString(string: text, attributes: [
-            .font: Self.statusFont,
-            .foregroundColor: color,
-        ])
-    }
-
     private func render() {
         let parts = statusParts(for: state)
-        // 状态栏按钮不会为子视图自动变宽，按两行文本的最大宽度显式设置长度
-        let attrs: [NSAttributedString.Key: Any] = [.font: Self.statusFont]
-        let textWidth = max(
-            (parts.top as NSString).size(withAttributes: attrs).width,
-            (parts.bottom as NSString).size(withAttributes: attrs).width
-        )
-        // 最小宽度下限，避免文字贴边或被裁切
-        statusItem.length = max(textWidth + 0, 36)
+        // 双行标题用单个带换行的属性字符串实现——状态栏按钮不支持自定义子视图，
+        // 子视图会触发 _updateReplicants 快照死循环（CPU 持续占用）
         if let button = statusItem.button {
-            button.title = ""
-            topStatusLabel.attributedStringValue = statusAttributed(parts.top, color: parts.color)
-            bottomStatusLabel.attributedStringValue = statusAttributed(parts.bottom, color: parts.color)
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.alignment = .center
+            paragraph.lineSpacing = 0
+            button.attributedTitle = NSAttributedString(
+                string: parts.top + "\n" + parts.bottom,
+                attributes: [
+                    .font: Self.statusFont,
+                    .foregroundColor: parts.color,
+                    .paragraphStyle: paragraph,
+                ]
+            )
         }
         renderPanel(text: [parts.top, parts.bottom].filter { !$0.isEmpty }.joined(separator: " "), color: parts.color)
     }
