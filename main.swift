@@ -826,17 +826,23 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     /// 2026-09-18 四变体实验），按钮内放子视图又会引发副本快照 CPU 死循环——两行 attributedTitle
     /// 是唯一稳定通道；9pt 自然行高经视觉实测无裁切、边距均匀。
     private func twoLineTitle(top: String, bottom: String, color: NSColor) -> NSAttributedString {
+        // cell 对标题顶锚绘制且无内边距 API：
+        // - 行高倍数压缩两行行盒，消除行间空隙
+        // - 顶部追加小字号空行（不可见），把内容块下推出上边距
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
         paragraph.lineSpacing = 0
-        return NSAttributedString(
-            string: top + "\n" + bottom,
-            attributes: [
-                .font: Self.statusFont,
-                .foregroundColor: color,
-                .paragraphStyle: paragraph,
-            ]
-        )
+        paragraph.lineHeightMultiple = 0.70
+        let result = NSMutableAttributedString(string: "\n", attributes: [
+            .font: NSFont.systemFont(ofSize: 3.5),
+            .paragraphStyle: paragraph,
+        ])
+        result.append(NSAttributedString(string: top + "\n" + bottom, attributes: [
+            .font: Self.statusFont,
+            .foregroundColor: color,
+            .paragraphStyle: paragraph,
+        ]))
+        return result
     }
 
     private func render() {
