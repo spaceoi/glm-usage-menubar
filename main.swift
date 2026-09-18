@@ -834,6 +834,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         paragraph.lineSpacing = 0
         paragraph.minimumLineHeight = 8
         paragraph.maximumLineHeight = 8
+        paragraph.lineSpacing = 0.5
         // 两行各自独立 baselineOffset：整体位置与行距解耦——
         // 第二行 offset 控制基线对齐（邻居墨迹底部 ≈ 栏底-2pt），第一行再负移收紧行距
         let result = NSMutableAttributedString(string: top + "\n", attributes: [
