@@ -833,7 +833,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         paragraph.alignment = .center
         paragraph.lineSpacing = 0
         paragraph.lineHeightMultiple = 0.70
-        let result = NSMutableAttributedString(string: "\n", attributes: [
+        // ⚠️ 不能用纯 "\n" 空段落：macOS 27 对空段落宽度计算返回天文数字
+        // （实测 item 被撑到 20022pt、遭系统隔离隐藏）；实心空格行按 advance 正常计算
+        let result = NSMutableAttributedString(string: " \n", attributes: [
             .font: NSFont.systemFont(ofSize: 3.5),
             .paragraphStyle: paragraph,
         ])
@@ -849,6 +851,12 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         let parts = statusParts(for: state)
         if let button = statusItem.button {
             button.attributedTitle = twoLineTitle(top: parts.top, bottom: parts.bottom, color: parts.color)
+            // 显式宽度兜底：内容宽度计算异常时 item 会被系统隔离隐藏
+            let textWidth = max(
+                (parts.top as NSString).size(withAttributes: [.font: Self.statusFont]).width,
+                (parts.bottom as NSString).size(withAttributes: [.font: Self.statusFont]).width
+            )
+            statusItem.length = ceil(textWidth) + 6
         }
         renderPanel(text: [parts.top, parts.bottom].filter { !$0.isEmpty }.joined(separator: " "), color: parts.color)
     }
