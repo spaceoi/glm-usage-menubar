@@ -661,7 +661,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private var panelState = Config.loadPanelState()
     /// API 时间显示时区：config.json 的 displayTimezone（IANA 名称），缺省为系统时区
     private var displayTimeZone: TimeZone = .current
-    static let statusFont = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium)
+    static let statusFont = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .medium)
     private var hudPanel: HUDPanel?
     private var hudButton: HUDButton?
 
@@ -823,14 +823,18 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     // MARK: 渲染
 
     /// macOS 27 移除了 NSStatusBarButton 对空标题 item 的 image 自动显示（模板/非模板实测均失效，
-    /// 2026-09-18 四变体实验），且按钮内放子视图会引发副本快照 CPU 死循环——单行 attributedTitle
-    /// 是唯一稳定渲染通道。
-    private func singleLineTitle(top: String, bottom: String, color: NSColor) -> NSAttributedString {
-        NSAttributedString(
-            string: top + " " + bottom,
+    /// 2026-09-18 四变体实验），按钮内放子视图又会引发副本快照 CPU 死循环——两行 attributedTitle
+    /// 是唯一稳定通道；9pt 自然行高经视觉实测无裁切、边距均匀。
+    private func twoLineTitle(top: String, bottom: String, color: NSColor) -> NSAttributedString {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        paragraph.lineSpacing = 0
+        return NSAttributedString(
+            string: top + "\n" + bottom,
             attributes: [
                 .font: Self.statusFont,
                 .foregroundColor: color,
+                .paragraphStyle: paragraph,
             ]
         )
     }
@@ -838,7 +842,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private func render() {
         let parts = statusParts(for: state)
         if let button = statusItem.button {
-            button.attributedTitle = singleLineTitle(top: parts.top, bottom: parts.bottom, color: parts.color)
+            button.attributedTitle = twoLineTitle(top: parts.top, bottom: parts.bottom, color: parts.color)
         }
         renderPanel(text: [parts.top, parts.bottom].filter { !$0.isEmpty }.joined(separator: " "), color: parts.color)
     }
