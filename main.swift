@@ -833,18 +833,14 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         paragraph.alignment = .center
         paragraph.lineSpacing = 0
         paragraph.lineHeightMultiple = 0.85
-        // ⚠️ 不能用纯 "\n" 空段落：macOS 27 对空段落宽度计算返回天文数字
-        // （实测 item 被撑到 20022pt、遭系统隔离隐藏）；实心空格行按 advance 正常计算
-        let result = NSMutableAttributedString(string: " \n", attributes: [
-            .font: NSFont.systemFont(ofSize: 8),
-            .paragraphStyle: paragraph,
-        ])
-        result.append(NSAttributedString(string: top + "\n" + bottom, attributes: [
+        // 与菜单栏邻居的基线对齐（它们墨迹底部 ≈ 栏底-2pt）：baselineOffset 直接在行盒内
+        // 下移字形，不改变块高——比前置 spacer 可靠（spacer 块高超过 cell 后会被居中锁死）
+        return NSAttributedString(string: top + "\n" + bottom, attributes: [
             .font: Self.statusFont,
             .foregroundColor: color,
             .paragraphStyle: paragraph,
-        ]))
-        return result
+            .baselineOffset: -3.5,
+        ])
     }
 
     private func render() {
