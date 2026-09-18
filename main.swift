@@ -832,7 +832,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
         paragraph.lineSpacing = 0
-        paragraph.lineHeightMultiple = 0.75
+        paragraph.minimumLineHeight = 8
+        paragraph.maximumLineHeight = 8
         // 两行各自独立 baselineOffset：整体位置与行距解耦——
         // 第二行 offset 控制基线对齐（邻居墨迹底部 ≈ 栏底-2pt），第一行再负移收紧行距
         let result = NSMutableAttributedString(string: top + "\n", attributes: [
@@ -845,7 +846,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             .font: Self.statusFont,
             .foregroundColor: color,
             .paragraphStyle: paragraph,
-            .baselineOffset: -3.0,
+            .baselineOffset: -3.5,
         ]))
         return result
     }
