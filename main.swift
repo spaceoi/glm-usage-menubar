@@ -845,7 +845,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             .font: Self.statusFont,
             .foregroundColor: color,
             .paragraphStyle: paragraph,
-            .baselineOffset: -1,
+            .baselineOffset: -3.0,
         ]))
         return result
     }
