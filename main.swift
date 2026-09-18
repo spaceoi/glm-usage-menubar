@@ -661,7 +661,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private var panelState = Config.loadPanelState()
     /// API 时间显示时区：config.json 的 displayTimezone（IANA 名称），缺省为系统时区
     private var displayTimeZone: TimeZone = .current
-    static let statusFont = NSFont.monospacedDigitSystemFont(ofSize: 9.5, weight: .medium)
+    static let statusFont = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium)
     private var hudPanel: HUDPanel?
     private var hudButton: HUDButton?
 
@@ -822,42 +822,23 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     // MARK: 渲染
 
-    /// 两行文字预渲染成图片：cell 对标题的垂直锚定不受段落样式控制（顶行会贴边），
-    /// 而 image 由按钮垂直居中，边距由绘制坐标完全掌控。
-    /// 正常态用 template image（画黑色 + isTemplate），系统按菜单栏深浅自动反色；
-    /// 橙/红/黄告警态直接绘制颜色、不做 template
-    private func renderStatusImage(top: String, bottom: String, color: NSColor) -> NSImage {
-        let attrs: [NSAttributedString.Key: Any] = [.font: Self.statusFont]
-        let topW = (top as NSString).size(withAttributes: attrs).width
-        let bottomW = (bottom as NSString).size(withAttributes: attrs).width
-        let width = ceil(max(topW, bottomW))
-        let lineH: CGFloat = 10.5
-        // 两行绘制框零间隙，总高 21pt，居中后上下各留约 2pt
-        let size = NSSize(width: width, height: lineH * 2)
-        let isWarning = (color == .systemOrange || color == .systemRed || color == .systemYellow)
-        let drawColor: NSColor = isWarning ? color : .black
-        var drawAttrs = attrs
-        drawAttrs[.foregroundColor] = drawColor
-        let image = NSImage(size: size)
-        image.lockFocus()
-        (top as NSString).draw(
-            in: NSRect(x: (size.width - topW) / 2, y: lineH, width: topW, height: lineH),
-            withAttributes: drawAttrs
+    /// macOS 27 移除了 NSStatusBarButton 对空标题 item 的 image 自动显示（模板/非模板实测均失效，
+    /// 2026-09-18 四变体实验），且按钮内放子视图会引发副本快照 CPU 死循环——单行 attributedTitle
+    /// 是唯一稳定渲染通道。
+    private func singleLineTitle(top: String, bottom: String, color: NSColor) -> NSAttributedString {
+        NSAttributedString(
+            string: top + " " + bottom,
+            attributes: [
+                .font: Self.statusFont,
+                .foregroundColor: color,
+            ]
         )
-        (bottom as NSString).draw(
-            in: NSRect(x: (size.width - bottomW) / 2, y: 0, width: bottomW, height: lineH),
-            withAttributes: drawAttrs
-        )
-        image.unlockFocus()
-        image.isTemplate = !isWarning
-        return image
     }
 
     private func render() {
         let parts = statusParts(for: state)
         if let button = statusItem.button {
-            button.image = renderStatusImage(top: parts.top, bottom: parts.bottom, color: parts.color)
-            button.imagePosition = .imageOnly
+            button.attributedTitle = singleLineTitle(top: parts.top, bottom: parts.bottom, color: parts.color)
         }
         renderPanel(text: [parts.top, parts.bottom].filter { !$0.isEmpty }.joined(separator: " "), color: parts.color)
     }
