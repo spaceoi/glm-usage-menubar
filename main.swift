@@ -661,7 +661,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private var panelState = Config.loadPanelState()
     /// API 时间显示时区：config.json 的 displayTimezone（IANA 名称），缺省为系统时区
     private var displayTimeZone: TimeZone = .current
-    static let statusFont = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .medium)
+    static let statusFont = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .regular)
     private var hudPanel: HUDPanel?
     private var hudButton: HUDButton?
 
@@ -832,15 +832,22 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
         paragraph.lineSpacing = 0
-        paragraph.lineHeightMultiple = 0.85
-        // 与菜单栏邻居的基线对齐（它们墨迹底部 ≈ 栏底-2pt）：baselineOffset 直接在行盒内
-        // 下移字形，不改变块高——比前置 spacer 可靠（spacer 块高超过 cell 后会被居中锁死）
-        return NSAttributedString(string: top + "\n" + bottom, attributes: [
+        paragraph.lineHeightMultiple = 0.75
+        // 两行各自独立 baselineOffset：整体位置与行距解耦——
+        // 第二行 offset 控制基线对齐（邻居墨迹底部 ≈ 栏底-2pt），第一行再负移收紧行距
+        let result = NSMutableAttributedString(string: top + "\n", attributes: [
             .font: Self.statusFont,
             .foregroundColor: color,
             .paragraphStyle: paragraph,
-            .baselineOffset: -3.5,
+            .baselineOffset: -20,
         ])
+        result.append(NSAttributedString(string: bottom, attributes: [
+            .font: Self.statusFont,
+            .foregroundColor: color,
+            .paragraphStyle: paragraph,
+            .baselineOffset: -1,
+        ]))
+        return result
     }
 
     private func render() {
